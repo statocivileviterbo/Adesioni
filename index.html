@@ -203,7 +203,7 @@
 
       elCount.textContent = results.length
         ? `Mostrando ${results.length} risultato${results.length!==1?'i':''} (max 10)`
-        : 'Nessun risultato';
+        : 'Nessun risultato - il comune ricercato NON E' SUBENTRATO';
 
       renderResults(results);
     }
@@ -291,4 +291,5 @@
     loadFromUrl();
   </script>
 </body>
+
 </html>
