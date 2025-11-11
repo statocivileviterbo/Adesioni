@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
   <meta charset="UTF-8" />
-  <title>Ricerca Comuni Italiani (ANPR) - Portable</title>
+  <title>Ricerca Comuni Italiani (ANSC) - Portable</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root{
@@ -37,8 +37,51 @@
     .main{display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px}
     @media (max-width:800px){.main{grid-template-columns:1fr}}
     .pane{padding:12px}
-    .list{border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#fff}
+    .list{border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#fff; position:relative}
     .list-header{font-size:12px; color:var(--muted); padding:8px 10px; border-bottom:1px solid var(--border); background:#f9fafb}
+    
+    /* Scrollable container styling */
+    #results{
+      height: 400px;
+      overflow-y: auto;
+      scroll-behavior: smooth;
+      scrollbar-width: thin;
+      scrollbar-color: var(--primary) var(--border);
+    }
+    
+    /* Custom scrollbar for webkit browsers */
+    #results::-webkit-scrollbar {
+      width: 8px;
+    }
+    #results::-webkit-scrollbar-track {
+      background: var(--border);
+      border-radius: 4px;
+    }
+    #results::-webkit-scrollbar-thumb {
+      background: var(--primary);
+      border-radius: 4px;
+    }
+    #results::-webkit-scrollbar-thumb:hover {
+      background: #1d4ed8;
+    }
+    
+    /* Scroll indicator shadow */
+    .list::after {
+      content: '';
+      position: absolute;
+      top: 38px;
+      left: 0;
+      right: 8px;
+      height: 8px;
+      background: linear-gradient(180deg, rgba(0,0,0,0.06) 0%, transparent 100%);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .list.has-scroll::after {
+      opacity: 1;
+    }
+    
     .item{padding:10px 12px; border-bottom:1px solid var(--border); cursor:pointer}
     .item:last-child{border-bottom:none}
     .item:hover{background:#f1f5ff}
@@ -56,32 +99,38 @@
     .row{display:grid; grid-template-columns:1fr 1fr; gap:8px}
     @media (max-width:600px){.row{grid-template-columns:1fr}}
     .footer-note{font-size:12px; color:var(--muted); text-align:center; margin-top:10px}
+    
+    /* Loading indicator */
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: var(--muted);
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <div style="font-size:44px">🏛️</div>
-      <h1>Ricerca Comuni Italiani (ANPR)</h1>
+      <h1>Ricerca Comuni Italiani (ANSC)</h1>
       <div class="controls">
-        <button id="btnFetch">🔍 Scarica dati da ANPR</button>
+        <button id="btnFetch">🔍 Scarica dati da ANSC</button>
         <label class="file-label" for="fileInput">📁 Carica JSON locale</label>
         <input id="fileInput" type="file" accept="application/json" />
         <button id="btnReset" disabled>❌ Reset</button>
       </div>
       <div class="status" id="status">Dati non caricati.</div>
     </div>
-
     <div class="card">
       <div class="search">
         <input id="query" type="text" placeholder="Cerca comune..." disabled />
         <div class="status" id="count"></div>
       </div>
-
       <div class="main">
         <div class="pane">
           <div class="list">
-            <div class="list-header">Risultati (max 10)</div>
+            <div class="list-header">Risultati (scroll per vedere tutti)</div>
             <div id="results"></div>
           </div>
         </div>
@@ -92,19 +141,18 @@
         </div>
       </div>
     </div>
-
     <div class="footer-note">
-      Dati ufficiali ANPR, versione minimale locale (senza installazione).
+      Dati ufficiali ANSC, versione minimale locale (senza installazione).
     </div>
   </div>
 
   <script>
-    // URL dati pubblici ANPR
+    // URL dati pubblici ANSC
     const DATA_URL = 'https://raw.githubusercontent.com/italia/anpr-opendata/main/data/adesioni_ansc_export.json';
-
+    
     // Stato in memoria
     let COMUNI = []; // array di {COMUNE, PROVINCIA, COD_ISTAT_COMUNE, DATA_ADESIONE_PREVISTA, DATA_ADESIONE}
-
+    
     // Elementi UI
     const elStatus  = document.getElementById('status');
     const elCount   = document.getElementById('count');
@@ -114,17 +162,29 @@
     const btnFetch  = document.getElementById('btnFetch');
     const btnReset  = document.getElementById('btnReset');
     const fileInput = document.getElementById('fileInput');
+    const listContainer = document.querySelector('.list');
+
+	// Debounce function per attendere che l'utente finisca di digitare
+	function debounce(func, wait) {
+	  let timeout;
+	  return function(...args) {
+		clearTimeout(timeout);
+		timeout = setTimeout(() => func.apply(this, args), wait);
+	  };
+	}
 
     // Utils
     function normalizeText(s){
       if(!s) return '';
       return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     }
+
     function formatDate(s){
       if(!s) return null;
       const d = new Date(s);
       return isNaN(d) ? s : d.toLocaleDateString('it-IT');
     }
+
     function validateComune(c){
       return {
         COMUNE: c.COMUNE || '',
@@ -134,31 +194,45 @@
         DATA_ADESIONE: c.DATA_ADESIONE || null
       };
     }
+
     function enableSearch(enabled){
       elQuery.disabled = !enabled;
       btnReset.disabled = !enabled;
     }
-    function setStatus(msg){ elStatus.textContent = msg; }
+
+    function setStatus(msg){ elStatus.innerHTML = msg; }
+
+    // Check if results container has scroll
+    function updateScrollIndicator() {
+      if (elResults.scrollHeight > elResults.clientHeight) {
+        listContainer.classList.add('has-scroll');
+      } else {
+        listContainer.classList.remove('has-scroll');
+      }
+    }
 
     // Caricamento dati
     async function loadFromUrl(){
       try{
-        setStatus('Caricamento dai dati ANPR in corso...');
+        setStatus('Caricamento dai dati ANSC in corso...');
         enableSearch(false);
         elResults.innerHTML = '';
         elDetails.innerHTML = '<div class="dim">Nessun comune selezionato.</div>';
 
         const res = await fetch(DATA_URL, {cache:'no-store'});
         if(!res.ok) throw new Error('HTTP ' + res.status);
+
         const raw = await res.json();
         if(!Array.isArray(raw)) throw new Error('Formato inatteso (non è un array)');
 
         COMUNI = raw.map(validateComune)
                     .filter(c => c.COMUNE && c.COD_ISTAT_COMUNE);
-        setStatus(`Dati caricati: ${COMUNI.length.toLocaleString('it-IT')} comuni.`);
+
+        setStatus(`Dati caricati: ${COMUNI.length.toLocaleString('it-IT')} comuni. <a href="https://github.com/italia/anpr-opendata/blob/main/data/adesioni_ansc_export.csv" target="_blank" title="Vedi dati ufficiali su GitHub" style="margin-left: 8px; text-decoration: none; color: #2563eb;">📊</a>`);
         enableSearch(true);
         elQuery.focus();
         applyFilter();
+
       }catch(err){
         setStatus('Errore nel caricamento: ' + (err && err.message ? err.message : 'sconosciuto') + '. Usa "Carica JSON locale" come fallback.');
         enableSearch(false);
@@ -172,12 +246,15 @@
         try{
           const raw = JSON.parse(reader.result);
           if(!Array.isArray(raw)) throw new Error('Il file non contiene un array JSON.');
+
           COMUNI = raw.map(validateComune)
                       .filter(c => c.COMUNE && c.COD_ISTAT_COMUNE);
+
           setStatus(`Dati caricati da file: ${COMUNI.length.toLocaleString('it-IT')} comuni.`);
           enableSearch(true);
           elQuery.focus();
           applyFilter();
+
         }catch(e){
           setStatus('Errore nel parsing del file: ' + e.message);
           enableSearch(false);
@@ -187,29 +264,49 @@
       reader.readAsText(file, 'utf-8');
     }
 
-    // Filtro e rendering (SOLO su COMUNE) — INIZIA CON + MAX 10
+    // Filtro e rendering (SENZA LIMITE) — INIZIA CON + SCROLL INFINITO
     function applyFilter(){
       const q = elQuery.value.trim();
       if(!q){
         elResults.innerHTML = '';
         elCount.textContent = '';
+        updateScrollIndicator();
         return;
       }
+
       const nq = normalizeText(q);
       const results = COMUNI
-        .filter(c => normalizeText(c.COMUNE).startsWith(nq)) // INIZIA CON
-        .sort((a,b) => a.COMUNE.localeCompare(b.COMUNE, 'it'))
-        .slice(0, 10); // MAX 10
+        .filter(c => normalizeText(c.COMUNE).includes(nq)) // CONTIENE
+		.sort((a, b) => {
+			const na = normalizeText(a.COMUNE);
+			const nb = normalizeText(b.COMUNE);
+			const nq = normalizeText(q);
+
+			// Priorità 1: Corrispondenza esatta
+			if (na === nq && nb !== nq) return -1; // 'a' è esatto, va prima
+			if (nb === nq && na !== nq) return 1;  // 'b' è esatto, va prima
+
+			// Priorità 2: Inizia con il termine di ricerca
+			const a_starts = na.startsWith(nq);
+			const b_starts = nb.startsWith(nq);
+			if (a_starts && !b_starts) return -1; // 'a' inizia con il termine, va prima
+			if (b_starts && !a_starts) return 1;  // 'b' inizia con il termine, va prima
+			
+			// Priorità 3: Ordinamento alfabetico standard per tutti gli altri casi
+			return na.localeCompare(nb, 'it');
+		})    
 
       elCount.textContent = results.length
-        ? `Mostrando ${results.length} risultato${results.length!==1?'i':''} (max 10)`
+        ? `${results.length.toLocaleString('it-IT')} risultato${results.length!==1?'i':''} trovato${results.length!==1?'i':''}`
         : 'Nessun risultato';
 
       renderResults(results);
+      updateScrollIndicator();
     }
 
     function renderResults(items){
       elResults.innerHTML = '';
+
       if(!items.length){
         const div = document.createElement('div');
         div.className = 'item dim';
@@ -217,10 +314,30 @@
         elResults.appendChild(div);
         return;
       }
+
+      // Show loading indicator if there are many results
+      if(items.length > 100) {
+        const loadingDiv = document.createElement('div');
+        loadingDiv.className = 'loading';
+        loadingDiv.textContent = 'Caricamento risultati...';
+        elResults.appendChild(loadingDiv);
+        
+        // Use setTimeout to prevent UI blocking for large datasets
+        setTimeout(() => {
+          elResults.innerHTML = '';
+          renderAllItems(items);
+        }, 10);
+      } else {
+        renderAllItems(items);
+      }
+    }
+
+    function renderAllItems(items) {
       for(const c of items){
         const div = document.createElement('div');
         div.className = 'item';
         const isOk = !!c.DATA_ADESIONE;
+
         div.innerHTML = `
           <div class="title">
             <span class="dot ${isOk ? 'ok' : 'no'}" title="${isOk ? 'Subentrato' : 'Non subentrato'}" aria-label="${isOk ? 'Subentrato' : 'Non subentrato'}"></span>
@@ -228,9 +345,11 @@
           </div>
           <div class="dim">ISTAT: ${escapeHtml(c.COD_ISTAT_COMUNE)}</div>
         `;
+
         div.addEventListener('click', () => showDetails(c));
         elResults.appendChild(div);
       }
+      updateScrollIndicator();
     }
 
     function showDetails(c){
@@ -249,7 +368,7 @@
             <div class="v">${escapeHtml(c.COD_ISTAT_COMUNE)}</div>
           </div>
           <div>
-            <div class="k">Subentrato ANPR</div>
+            <div class="k">Subentrato ANSC</div>
             <div class="v">
               ${c.DATA_ADESIONE
                 ? '<span class="pill ok">SI</span> <span class="dim">(' + escapeHtml(formatDate(c.DATA_ADESIONE) || '') + ')</span>'
@@ -274,23 +393,34 @@
 
     // Event wiring
     btnFetch.addEventListener('click', loadFromUrl);
+
     btnReset.addEventListener('click', () => {
       elQuery.value = '';
       elResults.innerHTML = '';
       elDetails.innerHTML = '<div class="dim">Nessun comune selezionato.</div>';
       elCount.textContent = '';
+      updateScrollIndicator();
       elQuery.focus();
     });
-    elQuery.addEventListener('input', applyFilter);
+
+    elQuery.addEventListener('input', debounce(applyFilter, 200));
+
     fileInput.addEventListener('change', (e) => {
       const f = e.target.files && e.target.files[0];
       if(f) loadFromFile(f);
+    });
+
+    // Smooth scrolling enhancement
+    elResults.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      elResults.scrollBy({
+        top: e.deltaY,
+        behavior: 'smooth'
+      });
     });
 
     // Caricamento automatico all'avvio
     loadFromUrl();
   </script>
 </body>
-
 </html>
-
