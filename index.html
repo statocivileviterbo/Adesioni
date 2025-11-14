@@ -182,11 +182,31 @@
       return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     }
 
-    function formatDate(s){
-      if(!s) return null;
-      const d = new Date(s);
-      return isNaN(d) ? s : d.toLocaleDateString('it-IT');
-    }
+	function formatDate(s){
+	  if(!s) return null;
+	  
+	  // Se la data è già in formato ISO (YYYY-MM-DD) o con separatore "-"
+	  if(s.includes('-')){
+		const parts = s.split('-');
+		// Se è formato YYYY-MM-DD
+		if(parts[0].length === 4){
+		  const d = new Date(s);
+		  return isNaN(d) ? s : d.toLocaleDateString('it-IT');
+		}
+		// Se è formato DD-MM-YYYY o DD-MM
+		if(parts.length >= 2){
+		  const day = parts[0];
+		  const month = parts[1];
+		  const year = parts[2] || new Date().getFullYear();
+		  const d = new Date(`${year}-${month}-${day}`);
+		  return isNaN(d) ? s : d.toLocaleDateString('it-IT');
+		}
+	  }
+  
+  // Altrimenti prova a parsare come data standard
+  const d = new Date(s);
+  return isNaN(d) ? s : d.toLocaleDateString('it-IT');
+}
 
     function validateComune(c){
       return {
